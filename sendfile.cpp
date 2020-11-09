@@ -1,4 +1,5 @@
 #include <iostream>
+#include <iomanip>
 #include <stdio.h>
 #include <string.h>
 using namespace std;
@@ -64,6 +65,8 @@ int main(int argc, char *argv[]) {
   printf("Enter encryption key: ");
   getline(cin, key);
 
+  printf("\n");
+
   if (VERBOSE) {
     printf("<--- VERBOSE --->\n");
     printf("Entered Values:\n");
@@ -96,17 +99,26 @@ int main(int argc, char *argv[]) {
     exit(1);
   }
 
+  int pktNum = 0;
+  int hexValue = 0;
+  size_t bytesRead = 0;
+  bytesRead = std::fread(fileBuffer, KB, stoi(pktSize), pFile);
 
-  size_t bytesRead = std::fread(fileBuffer, KB, stoi(pktSize), pFile);
+  do {
+    string sbuffer = fileBuffer;
 
-  if (VERBOSE) {
-    printf("<--- VERBOSE --->\n");
-    printf("Bytes Read: %zu, File Buffer: %s\n", bytesRead, fileBuffer);
-    printf("<--- VERBOSE --->\n");
-  }
+    // TODO: Encrypt packet
+    if (pktNum <= 10) {
+      printf("Sent encrypted packet#%d - ", pktNum);
+      printf("%02hhX%02hhX ... %02hhX%02hhX\n", sbuffer[0], sbuffer[1], sbuffer[sbuffer.length() - 2], sbuffer[sbuffer.length() - 1]);
+    }
+
+    pktNum++;
+    bytesRead = std::fread(fileBuffer, KB, stoi(pktSize), pFile);
+  } while (bytesRead == stoi(pktSize));
 
   string result = checkSum(file);
-  printf("MD5: %s\n", result.c_str());
+  printf("MD5:\n%s\n", result.c_str());
 
   fclose(pFile);
   free(fileBuffer);
