@@ -16,13 +16,15 @@ bool VERBOSE = false;
 
 int openConnection(string ipAddress, int port);
 int startServer(string ipAddress, int port);
-void toggleEncryption(char *buffer, string key);
+void toggleEncryption(char *buffer, int length, string key);
 string checkSum(string data);
 
 
 int main(int argc, char *argv[]) {
-  int pktNum = 0;
   int sockfd;
+  unsigned int pktNum = 0;
+  unsigned int pktSizeBytes = 0;
+  size_t bytesRead = 0;
   Role role = CLIENT;
   string ipAddress;
   string port;
@@ -79,6 +81,7 @@ int main(int argc, char *argv[]) {
   printf("Enter encryption key: ");
   getline(cin, key);
 
+  pktSizeBytes = KB * stoi(pktSize);
   printf("\n");
 
   if (VERBOSE) {
@@ -100,7 +103,7 @@ int main(int argc, char *argv[]) {
   char *fileBuffer = (char *) calloc(KB, stoi(pktSize));
 
   if (fileBuffer == NULL) {
-    fprintf(stderr, "Internal error: Unable to initialize file buffer");
+    fprintf(stderr, "Internal error: Unable to initialize file buffer\nError #: %d\n", errno);
     exit(1);
   }
 
@@ -117,15 +120,12 @@ int main(int argc, char *argv[]) {
   }
 
   if (pFile == NULL) {
-    fprintf(stderr, "File error: Unable to open %s", file.c_str());
+    fprintf(stderr, "File error: Unable to open %s\nError #: %d\n", file.c_str(), errno);
     exit(1);
   }
 
   if (role == CLIENT) {
     // If client, read data from provided file and send each packet along to it's destination
-    size_t kbytesRead = 0;
-    kbytesRead = std::fread(fileBuffer, KB, stoi(pktSize), pFile);
-
     // Connect to server
     sockfd = openConnection(ipAddress, stoi(port));
     if (sockfd < 0) {
@@ -134,25 +134,22 @@ int main(int argc, char *argv[]) {
     }
 
     do {
-      // TODO: Test that this actually works
-      // if (kbytesRead < stoi(pktSize)) {
-      //   // If the current read length was less than the packet size, we'll need to zero out the remainder of the buffer
-      //   memset(fileBuffer + (kbytesRead * KB), 0, ((stoi(pktSize) - kbytesRead) * KB));
-      // }
+      bytesRead = std::fread(fileBuffer, 1, pktSizeBytes, pFile);
 
       if (VERBOSE) {
+        printf("Bytes read: %lu\n", bytesRead);
         printf("Pkt Content #%d: %s \n", pktNum, fileBuffer);
       }
 
-      toggleEncryption(fileBuffer, key);
-      if (VERBOSE) {
-        printf("Encrypted content: %s", fileBuffer);
+      if (!key.empty()){
+        toggleEncryption(fileBuffer, bytesRead, key);
       }
 
       // Send data
-      // write(sockfd, fileBuffer, KB * stoi(pktSize));
-      // Send only data read from file -- confirm if this is OK
-      write(sockfd, fileBuffer, kbytesRead * KB);
+      if (write(sockfd, fileBuffer, bytesRead) < 0) {
+        fprintf(stderr, "Error writing data to socket\nError #: %d", errno);
+        exit(-1);
+      }
 
       if (pktNum <= 10) {
         string sbuffer = fileBuffer;
@@ -161,8 +158,7 @@ int main(int argc, char *argv[]) {
       }
 
       pktNum++;
-      kbytesRead = std::fread(fileBuffer, KB, stoi(pktSize), pFile);
-    } while (kbytesRead == stoi(pktSize));
+    } while (bytesRead == pktSizeBytes);
 
     printf("Send Success!\n");
   } else {
@@ -174,22 +170,41 @@ int main(int argc, char *argv[]) {
       exit(-1);
     }
 
-    while (read(sockfd, fileBuffer, stoi(pktSize) * KB)) {
+    do {
+      bytesRead = read(sockfd, fileBuffer, pktSizeBytes);
+      if (VERBOSE) {
+        printf("Bytes received: %lu\n", bytesRead);
+      }
+
       string sbuffer = fileBuffer;
       printf("Rec encrypted packet#%d - ", pktNum);
       printf("%02hhX%02hhX ... %02hhX%02hhX\n", sbuffer[0], sbuffer[1], sbuffer[sbuffer.length() - 2], sbuffer[sbuffer.length() - 1]);
       pktNum++;
 
-      // TODO: Needs logic for stdout
-      toggleEncryption(fileBuffer, key);
-      std::fwrite(fileBuffer, sizeof(char), stoi(pktSize) * KB, pFile);      
-    }
+      if (!key.empty()){
+        toggleEncryption(fileBuffer, bytesRead, key);
+      }
+      
+      if (VERBOSE) {
+        printf("Decrypted buffer content: %s\n", fileBuffer);
+      }
+
+      std::fwrite(fileBuffer, sizeof(char), pktSizeBytes, pFile);      
+    } while (read(sockfd, fileBuffer, pktSizeBytes));
+
   }
 
   // TODO: Adjust logic to accomidate server and stdout
   string result = checkSum(file);
   printf("MD5:\n%s\n", result.c_str());
 
+  if (role == SERVER && strcmp(file.c_str(), "stdout")) {
+    while(fread(fileBuffer, KB, stoi(pktSize), pFile)) {
+      cout << fileBuffer;
+    }
+  }
+
+  close(sockfd);
   fclose(pFile);
   free(fileBuffer);
 }
@@ -200,7 +215,7 @@ int openConnection(string ipAddress, int port) {
   int sockfd = socket(AF_INET, SOCK_STREAM, 0);
 
   if (sockfd < 0) {
-    fprintf(stderr, "Socket creation error\n");
+    fprintf(stderr, "Socket creation error\nError #: %d\n", errno);
     return -1;
   }
 
@@ -208,13 +223,17 @@ int openConnection(string ipAddress, int port) {
   serverAddr.sin_port = htons(port);
 
   if (inet_pton(AF_INET, ipAddress.c_str(), &serverAddr.sin_addr) < 1) {
-    fprintf(stderr, "Invalid IP address provided\n");
+    fprintf(stderr, "Invalid IP address provided\nError #: %d\n", errno);
     return -1;
   }
 
   if (connect(sockfd, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0 ) {
-    fprintf(stderr, "Failed to connect to %s:%d", ipAddress.c_str(), port);
+    fprintf(stderr, "Failed to connect to %s:%d\nError #: %d\n", ipAddress.c_str(), port, errno);
     return -1;
+  }
+
+  if (VERBOSE) {
+    printf("Connection made to %s:%d\n", ipAddress.c_str(), port);
   }
 
   return sockfd;
@@ -223,16 +242,19 @@ int openConnection(string ipAddress, int port) {
 // Open socket to receive data and return socket file descriptor. If return < 0, then an error occurred
 int startServer(string ipAddress, int port) {
   int option = 1;
-  struct sockaddr_in serverAddr;
+  struct sockaddr_in serverAddr = {0};
+  struct sockaddr_in connInfo = {0};
+  socklen_t connInfoSize = 0;
+  char *clientIP;
   int sockfd = socket(AF_INET, SOCK_STREAM, 0), acceptfd;
 
   if (sockfd < 0) {
-    fprintf(stderr, "Socket creation error\n");
+    fprintf(stderr, "Socket creation error\nError #: %d\n", errno);
     return -1;
   }
 
   if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &option, sizeof(option))) {
-    fprintf(stderr, "Failed to set socket options\n");
+    fprintf(stderr, "Failed to set socket options\nError #: %d\n", errno);
     return -1;
   }
 
@@ -241,32 +263,50 @@ int startServer(string ipAddress, int port) {
   serverAddr.sin_port = htons(port);
 
   if (bind(sockfd, (struct sockaddr *) &serverAddr, sizeof(serverAddr)) < 0) {
-    fprintf(stderr, "Failed to bind socket to the port %d", port);
+    fprintf(stderr, "Failed to bind socket to the port %d\nError #: %d\n", port, errno);
     return -1;
   }
 
-  if (listen(sockfd, 0) < 0) {
-    fprintf(stderr, "Failed to begin listening on port %d", port);
+  if (listen(sockfd, 1) < 0) {
+    fprintf(stderr, "Failed to begin listening on port %d\nError #: %d\n", port, errno);
     return -1;
   }
 
-  acceptfd = accept(sockfd, (struct sockaddr *) & serverAddr, (socklen_t *) sizeof(&serverAddr));
-  if (acceptfd < 0) {
-    fprintf(stderr, "Failed to accept connection on port %d", port);
-    return -1;
+  if (VERBOSE) {
+    printf("Server bound and listening on port %d\n", port);
   }
 
+  do {
+    acceptfd = accept(sockfd, (struct sockaddr *) &connInfo, &connInfoSize);
+    clientIP = inet_ntoa(connInfo.sin_addr);
+
+    if (VERBOSE) {
+      printf("Attempted connection from %s\n", clientIP);
+    }
+
+    if (acceptfd < 0) {
+      fprintf(stderr, "Failed to accept connection on port %d\nError #: %d\n", port, errno);
+      return -1;
+    }
+
+    if (inet_pton(AF_INET, ipAddress.c_str(), &serverAddr.sin_addr) < 1) {
+      fprintf(stderr, "Invalid IP address provided\nError #: %d\n", errno);
+      return -1;
+    }
+
+    if (VERBOSE && (connInfo.sin_addr.s_addr == serverAddr.sin_addr.s_addr)) {
+      printf("Connection established.\n");
+    }
+  } while (connInfo.sin_addr.s_addr != serverAddr.sin_addr.s_addr);
+
+  close(sockfd);
   return acceptfd;
 }
 
 // Encrypt or decrypt provided data by XOR'ing data with provided key
-void toggleEncryption(char *buffer, string key) {
-  if (VERBOSE) {
-    printf("Key: %s, Key length: %lu\n", key.c_str(), key.length());
-  }
-
+void toggleEncryption(char *buffer, int length, string key) {
   int i = 0;
-  while (buffer[i] != '\n') {
+  while (i < length) {
     buffer[i] = buffer[i] ^ key[i % key.length()];
     i++;
   }
@@ -278,7 +318,7 @@ string checkSum(string data) {
   FILE *pipe = popen(command.c_str(), "r");
 
   if (pipe == NULL) {
-    fprintf(stderr, "Error opening pipe.");
+    fprintf(stderr, "Error opening pipe\nError #: %d\n", errno);
     exit(1);
   }
 
