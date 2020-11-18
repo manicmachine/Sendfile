@@ -17,24 +17,24 @@ bool VERBOSE = false;
 
 int openConnection(string ipAddress, int port);
 int startServer(string ipAddress, int port);
-void toggleEncryption(char *buffer, int length, string key);
+int toggleEncryption(char *buffer, int length, string key, int offset);
 string getLocalAddress();
 string checkSum(string data);
 
 
 int main(int argc, char *argv[]) {
-  int encryptMod = 0; // used to keep track of the modulus for encrypting packets that aren't divisble by pktSize
+  int offset = 0; // used to keep track of the modulus for encrypting packets that aren't divisble by pktSize
   int sockfd;
   unsigned int pktNum = 0;
   unsigned int pktSizeBytes = 0;
   size_t bytesRead = 0;
   Role role = CLIENT;
-  string pktSize = "32";
-  string ipAddress;
-  string localIPAddress;
-  string port;
-  string file;
-  string key;
+  string pktSize = "";
+  string ipAddress = "";
+  string localIPAddress = "";
+  string port = "";
+  string file = "";
+  string key = "";
   FILE *pFile;
 
   // Parse command-line arguments 
@@ -101,10 +101,9 @@ int main(int argc, char *argv[]) {
   }
 
   if (port.empty()) {
-    getline(cin, port);
     printf("Port #: ");
+    getline(cin, port);
   }
-    
 
   if (role == CLIENT) {
     if (file.empty()) {
@@ -115,8 +114,14 @@ int main(int argc, char *argv[]) {
     if (pktSize.empty()) {
       printf("Pkt Size: ");
       getline(cin, pktSize);
+
+      if (pktSize.empty()) {
+        pktSize = "32"; // set default packet size if none provided
+      }
     }
   } else {
+    pktSize = "32";
+
     if (file.empty()) {
       printf("Save file to (default: stdout): ");
       getline(cin, file);
@@ -162,7 +167,7 @@ int main(int argc, char *argv[]) {
 
   // Open file for read/writing as necessary
   if (role == SERVER) {
-    // Store incoming packets in a temporary file for decryption and md5. Then forward along to stdout rename as destination file afterwards
+    // Store incoming packets in a temporary file for md5 and then forward along to stdout
     pFile = std::fopen(file.c_str(), "w+");
   } else {
     pFile = std::fopen(file.c_str(), "r");
@@ -183,9 +188,6 @@ int main(int argc, char *argv[]) {
       exit(-1);
     }
 
-    //TODO: REMOVE ME
-    printf("Size of pktsize: %d\n", sizeof(pktSize));
-
     if (sockfd < 0) {
       // Socket failed to open; openConnection would've already printed the error so just exit
       exit(-1);
@@ -205,7 +207,7 @@ int main(int argc, char *argv[]) {
       }
 
       if (!key.empty()) {
-        toggleEncryption(fileBuffer, bytesRead, key);
+        offset = toggleEncryption(fileBuffer, bytesRead, key, offset);
       }
 
       // Send data
@@ -226,11 +228,13 @@ int main(int argc, char *argv[]) {
   } else {
     // If server, read incoming data from open socket and write to file
     sockfd = startServer(ipAddress, stoi(port));
+
+    // The first 32 bytes sent from the client is the packet size. Read and configure as appropriate
     read(sockfd, fileBuffer, sizeof(pktSize));
     pktSize = fileBuffer;
 
-    if ((stoi(pktSize) * KB) != pktSizeBytes) {
-      pktSizeBytes = stoi(pktSize) * KB;
+    if ((unsigned int) (KB * stoi(pktSize)) != pktSizeBytes) {
+      pktSizeBytes = KB * stoi(pktSize);
       fileBuffer = (char *) realloc(fileBuffer, pktSizeBytes);
 
       if (fileBuffer == NULL) {
@@ -239,8 +243,10 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    //TODO: REMOVE ME
-    printf("New pktsize: %s\n", pktSize.c_str());
+    if (VERBOSE) {
+      printf("Received packet size: %d KB\n", stoi(pktSize));
+    }
+
     if (sockfd < 0) {
       // Socket failed to open; startServer would've already printed the error so just exit
       exit(-1);
@@ -267,7 +273,7 @@ int main(int argc, char *argv[]) {
       pktNum++;
 
       if (!key.empty()) {
-        toggleEncryption(fileBuffer, bytesRead, key);
+        offset = toggleEncryption(fileBuffer, bytesRead, key, offset);
       }
 
       fwrite(fileBuffer, sizeof(char), bytesRead, pFile);
@@ -276,33 +282,7 @@ int main(int argc, char *argv[]) {
     printf("\nReceive success!\n");
   }
 
-  // If we're the server and output is set to stdout, then we'll need to reset the file cursor so we can read the entire
-  // file to stdout before deleting the temp file
-  // if (role == SERVER && !key.empty()) {
-  //   fseek(pFile, 0, SEEK_SET);
-    
-  //   do {
-  //     bytesRead = fread(fileBuffer, sizeof(char), pktSizeBytes, pFile);
-
-  //     if (bytesRead < pktSizeBytes) {
-  //       memset(fileBuffer + bytesRead, 0, (pktSizeBytes - bytesRead));
-  //     }
-
-  //     toggleEncryption(fileBuffer, bytesRead, key);
-
-  //     if (strcmp(file.c_str(), "./.sendfile_tmp") == 0) {
-  //       // Send to stdout
-  //       fprintf(stdout, "%s", fileBuffer);
-  //     } else {
-  //       // Overwrite file with decrypted contents and then rename
-  //       fseek(pFile, -(bytesRead), SEEK_CUR); // Double back and overwrite bytes with decrypted content
-  //       fwrite(fileBuffer, sizeof(char), bytesRead, pFile);
-  //     }
-
-  //   } while (bytesRead == pktSizeBytes);
-
-  // }
-
+  // If file destination is stdout, reset file cursor and read the entirity of the tmp file
   if (role == SERVER && strcmp(file.c_str(), "./.sendfile_tmp") == 0) {
     fseek(pFile, 0, SEEK_SET);
     
@@ -316,6 +296,7 @@ int main(int argc, char *argv[]) {
       fprintf(stdout, "%s", fileBuffer);
     } while (bytesRead == pktSizeBytes);
 
+    printf("\n");
   }
 
   close(sockfd);
@@ -324,6 +305,7 @@ int main(int argc, char *argv[]) {
 
   printf("MD5:\n%s\n", checkSum(file).c_str());
   
+  // Delete temp file when everything is said and done
   if (role == SERVER && (strcmp(file.c_str(), "./.sendfile_tmp") == 0)) {
     remove(file.c_str());
   }
@@ -425,10 +407,13 @@ int startServer(string ipAddress, int port) {
 }
 
 // Encrypt or decrypt provided data by XOR'ing data with provided key
-void toggleEncryption(char *buffer, int length, string key) {
-  for (int i = 0; i < length; i++) {
-    buffer[i] = buffer[i] ^ key[i % key.length()];
+int toggleEncryption(char *buffer, int length, string key, int offset) {
+  int i;
+  for (i = 0; i < length; i++) {
+    buffer[i] = buffer[i] ^ key[(i + offset) % key.length()];
   }
+
+  return (i + offset) % key.length();
 }
 
 // Discover the localhost's ip address by resolving it's hostname
