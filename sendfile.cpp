@@ -176,6 +176,16 @@ int main(int argc, char *argv[]) {
   if (role == CLIENT) {
     // If client, read data from provided file and send each packet along to it's destination
     sockfd = openConnection(ipAddress, stoi(port));
+
+    // Send pktsize to server
+    if (write(sockfd, pktSize.c_str(), sizeof(pktSize)) < 0) {
+      fprintf(stderr, "Error writing data to socket\nError #: %d", errno);
+      exit(-1);
+    }
+
+    //TODO: REMOVE ME
+    printf("Size of pktsize: %d\n", sizeof(pktSize));
+
     if (sockfd < 0) {
       // Socket failed to open; openConnection would've already printed the error so just exit
       exit(-1);
@@ -216,7 +226,21 @@ int main(int argc, char *argv[]) {
   } else {
     // If server, read incoming data from open socket and write to file
     sockfd = startServer(ipAddress, stoi(port));
+    read(sockfd, fileBuffer, sizeof(pktSize));
+    pktSize = fileBuffer;
 
+    if ((stoi(pktSize) * KB) != pktSizeBytes) {
+      pktSizeBytes = stoi(pktSize) * KB;
+      fileBuffer = (char *) realloc(fileBuffer, pktSizeBytes);
+
+      if (fileBuffer == NULL) {
+        fprintf(stderr, "Internal error: Unable to initialize file buffer\nError #: %d\n", errno);
+        exit(-1);
+      }
+    }
+
+    //TODO: REMOVE ME
+    printf("New pktsize: %s\n", pktSize.c_str());
     if (sockfd < 0) {
       // Socket failed to open; startServer would've already printed the error so just exit
       exit(-1);
