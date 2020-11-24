@@ -90,8 +90,8 @@ int main(int argc, char *argv[]) {
     getline(cin, ipAddress);
   }
 
-  // Since the application recognizes connections from the same host as coming from 0.0.0.0, we should check
-  // if the user is expecting a connection from itself. If so, set ipAddress to 0.0.0.0 so it'll accept local connections
+  // Since the application recognizes connections from the same host as coming from 127.0.0.1, we should check
+  // if the user is expecting a connection from itself. If so, set ipAddress to 127.0.0.1 so it'll accept local connections
   if ((strcmp(ipAddress.c_str(), localIPAddress.c_str()) == 0)|| ipAddress.empty()) {
     if (VERBOSE && !ipAddress.empty()) {
       printf("Local IP address provided; Remapping to 127.0.0.1 for simplicity\n");
@@ -128,7 +128,7 @@ int main(int argc, char *argv[]) {
     }
 
     // If nothing is provided, default to stdout. As such, we'll need a temp file to collect the incoming data before
-    // it can be processes. Once finished, the temp file will then be deleted
+    // it can be processed by md5sum. Once finished, the temp file will then be deleted
     if (file.empty() || strcmp(file.c_str(), "stdout") == 0) {
       file = "./.sendfile_tmp";
     }
@@ -167,7 +167,6 @@ int main(int argc, char *argv[]) {
 
   // Open file for read/writing as necessary
   if (role == SERVER) {
-    // Store incoming packets in a temporary file for md5 and then forward along to stdout
     pFile = std::fopen(file.c_str(), "w+");
   } else {
     pFile = std::fopen(file.c_str(), "r");
@@ -182,19 +181,20 @@ int main(int argc, char *argv[]) {
     // If client, read data from provided file and send each packet along to it's destination
     sockfd = openConnection(ipAddress, stoi(port));
 
-    // Send pktsize to server
+    // Communicate packet size to the server
     if (write(sockfd, pktSize.c_str(), sizeof(pktSize)) < 0) {
       fprintf(stderr, "Error writing data to socket\nError #: %d", errno);
       exit(-1);
     }
 
     if (sockfd < 0) {
-      // Socket failed to open; openConnection would've already printed the error so just exit
+      // Socket failed to open; openConnection() would've already printed the error so just exit
       exit(-1);
     }
 
     do {
       bytesRead = std::fread(fileBuffer, sizeof(char), pktSizeBytes, pFile);
+
       // If the number of bytes read is less than the size of a packet, we'll need to be sure to zero out the difference
       if (bytesRead == 0) {
         break;
@@ -210,7 +210,7 @@ int main(int argc, char *argv[]) {
         offset = toggleEncryption(fileBuffer, bytesRead, key, offset);
       }
 
-      // Send data
+      // Send data to server
       if (write(sockfd, fileBuffer, bytesRead) < 0) {
         fprintf(stderr, "Error writing data to socket\nError #: %d", errno);
         exit(-1);
@@ -219,6 +219,8 @@ int main(int argc, char *argv[]) {
       if (pktNum <= 10 || VERBOSE) {
         printf("Sent encrypted packet#%d - ", pktNum);
         printf("%02hhX%02hhX ... %02hhX%02hhX\n", (unsigned char) fileBuffer[0],(unsigned char) fileBuffer[1], (unsigned char) fileBuffer[bytesRead - 2], (unsigned char) fileBuffer[bytesRead - 1]);
+      } else if (pktNum == 11) {
+        printf("\t.\n\t.\n\t.\n");
       }
 
       pktNum++;
@@ -233,6 +235,7 @@ int main(int argc, char *argv[]) {
     read(sockfd, fileBuffer, sizeof(pktSize));
     pktSize = fileBuffer;
 
+    // If the provided packet size is different than the default then readjust the buffer as necessary
     if ((unsigned int) (KB * stoi(pktSize)) != pktSizeBytes) {
       pktSizeBytes = KB * stoi(pktSize);
       fileBuffer = (char *) realloc(fileBuffer, pktSizeBytes);
@@ -248,12 +251,13 @@ int main(int argc, char *argv[]) {
     }
 
     if (sockfd < 0) {
-      // Socket failed to open; startServer would've already printed the error so just exit
+      // Socket failed to open; startServer() would've already printed the error so just exit
       exit(-1);
     }
 
     do {
       bytesRead = read(sockfd, fileBuffer, pktSizeBytes);
+
       // If the number of bytes read is less than the size of a packet, we'll need to be sure to zero out the difference
       if (bytesRead == 0) {
         break;
@@ -268,6 +272,8 @@ int main(int argc, char *argv[]) {
       if (pktNum <= 10 || VERBOSE) {
         printf("Rec encrypted packet#%d - ", pktNum);
         printf("%02hhX%02hhX ... %02hhX%02hhX\n", (unsigned char) fileBuffer[0],(unsigned char) fileBuffer[1], (unsigned char) fileBuffer[bytesRead - 2], (unsigned char) fileBuffer[bytesRead - 1]);
+      } else if (pktNum == 11) {
+        printf("\t.\n\t.\n\t.\n");
       }
 
       pktNum++;
@@ -279,10 +285,10 @@ int main(int argc, char *argv[]) {
       fwrite(fileBuffer, sizeof(char), bytesRead, pFile);
     } while (bytesRead > 0);
 
-    printf("\nReceive success!\n");
+    printf("\nReceive Success!\n");
   }
 
-  // If file destination is stdout, reset file cursor and read the entirity of the tmp file
+  // If file destination is stdout, reset file cursor and read the entirety of the tmp file
   if (role == SERVER && strcmp(file.c_str(), "./.sendfile_tmp") == 0) {
     fseek(pFile, 0, SEEK_SET);
     
