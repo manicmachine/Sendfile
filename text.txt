@@ -1,4 +1,0 @@
-Before sending the file over, each side must know the encryption/decryption key. These are prompted
-and entered before sending the file over (see session dialog above). The entire file is broken up into
-packets based on the packet size specified in the command line, i.e., each packet cannot be over that size.
-A large file will obviously require the sender to send a large number of packets each time.
